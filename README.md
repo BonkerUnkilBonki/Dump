@@ -62,52 +62,64 @@ or just set the variables inline.
 
 ---
 
-## Deploy on Render (Background Worker)
+## Deploy on Render (Web Service)
 
-A Background Worker is the right service type: it runs the polling loop
-continuously and needs no public URL. `render.yaml` in this folder sets most
-of it up. (Note: background workers are a paid Render service type — the free
-plan only covers web services, which spin down after ~15 min idle.)
+The bot runs fine as a plain **Web Service** — no Blueprint needed. In this
+mode it binds Render's `$PORT`, serves a health page at `/`, runs the sweep
+loop in the background, and exposes `/sweep` to trigger a sweep on demand.
 
 **R1. Push these files to a GitHub repo** — `dump_bot.py`, `requirements.txt`,
-`render.yaml`, and `.gitignore` if you have one. Never commit `.env`.
+`.gitignore` (and `render.yaml` if you ever want the Blueprint instead). Put
+them at the **root** of the repo, not inside a subfolder — Render looks for
+`render.yaml` at the root, and the start command assumes the files are there.
+Never commit `.env`.
 
-```bash
-git init && git add dump_bot.py requirements.txt render.yaml
-git commit -m "github dump bot"
-git branch -M main
-git remote add origin https://github.com/<you>/<repo>.git
-git push -u origin main
-```
+**R2. New + → Web Service** → connect the repo → Runtime **Python**, then set:
 
-**R2. Create the worker.** Render Dashboard → **New +** → **Blueprint** →
-connect the repo → Render reads `render.yaml` and creates the **Background
-Worker**. It prompts you for the two secrets.
+| Setting | Value |
+| --- | --- |
+| Build Command | `pip install -r requirements.txt` |
+| Start Command | `python dump_bot.py` |
+| Health Check Path | `/` |
 
-(Manual alternative: **New +** → **Background Worker** → connect the repo →
-Runtime **Python** → Build `pip install -r requirements.txt` → Start
-`python dump_bot.py`. Then add the env vars and the disk by hand.)
-
-**R3. Set the environment variables** (the Blueprint fills most of these; you
-supply the two secrets):
+**R3. Add the environment variables:**
 
 | Key | Value |
 | --- | --- |
+| `WEB` | `true` |
 | `TELEGRAM_BOT_TOKEN` | your BotFather token |
 | `GITHUB_TOKEN` | fine-grained PAT, Public Repositories read-only |
 | `TELEGRAM_CHANNEL_ID` | `@BonkiDump` |
 | `GITHUB_USER` | `BonkerUnkilBonki` |
-| `STATE_FILE` | `/var/data/dump_state.json` |
 | `ONCE` | `false` |
+| `SWEEP_KEY` | optional random string, protects `/sweep` |
 
-**R4. Keep the disk.** `render.yaml` attaches a 1 GB disk mounted at `/var/data`,
-and `STATE_FILE` points into it, so the de-dup memory survives restarts and
-redeploys. Without this, every restart would re-dump everything.
+**R4. Deploy.** Open the service URL — you'll get JSON like
+`{"status":"ok","watching":"BonkerUnkilBonki",...}`. If that loads, the
+service is healthy and Render will mark it Live.
 
-**R5. Deploy and watch the logs.** On first start the worker does the full
-backfill automatically — one album per release, oldest first — then logs
-`Sweep complete - 0 asset(s) sent` on the next pass, which confirms de-dup is
-working. Check `@BonkiDump` to see the files arrive.
+**R5. First run is the backfill.** The loop sweeps every `POLL_INTERVAL`
+seconds (default 30 min), so within a minute of deploying you should see
+albums arrive in `@BonkiDump`, oldest release first.
+
+### The free-tier catch (and the fix)
+
+Render's **free** web services spin down after ~15 minutes with no incoming
+requests, which pauses the sweep loop. Two ways to handle it:
+
+- **Keep it awake with a pinger.** Point a free uptime pinger (cron-job.org,
+  UptimeRobot, etc.) at your service URL every 10 minutes. Each hit keeps the
+  instance alive; to also trigger a sweep, hit
+  `https://<your-service>.onrender.com/sweep?key=<SWEEP_KEY>`.
+- **Upgrade the instance** to an always-on paid plan.
+
+### The state-file catch
+
+`dump_state.json` records what has been sent. Free Render instances have an
+ephemeral disk, so on a **redeploy** it resets and the bot would re-dump
+everything once. To avoid that, attach a **Disk** mounted at `/var/data` and
+set `STATE_FILE=/var/data/dump_state.json` (disks need a paid instance). On a
+VPS / Pi / your own PC the file simply persists.
 
 ---
 
@@ -139,6 +151,8 @@ normally. If you need durable state on a container host, mount a disk for it.
 | `GITHUB_TOKEN` | — | recommended; lifts the 60/hr limit |
 | `TELEGRAM_CHANNEL_ID` | — | where files go (`@BonkiDump`) |
 | `ONCE` | `false` | one sweep then exit |
+| `WEB` | `false` | run as a web service (bind `$PORT`, serve `/`) |
+| `SWEEP_KEY` | — | optional key protecting `/sweep` |
 | `POLL_INTERVAL` | `1800` | seconds between sweeps |
 | `INCLUDE_PRERELEASES` | `true` | include pre-releases |
 | `ASSET_FILTER` | (all) | regex; e.g. `\.apk$` for APKs only |

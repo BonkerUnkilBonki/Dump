@@ -40,6 +40,11 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "").strip()        # recommended
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "1800"))     # seconds between sweeps
 ONCE = os.environ.get("ONCE", "false").lower() == "true"         # single sweep then exit
 
+# web-service mode (for hosts like Render that require a bound port)
+WEB = os.environ.get("WEB", "false").lower() == "true"           # serve HTTP + sweep loop
+WEB_PORT = int(os.environ.get("PORT", os.environ.get("WEB_PORT", "8080")))
+SWEEP_KEY = os.environ.get("SWEEP_KEY", "").strip()              # protects /sweep
+
 INCLUDE_PRERELEASES = os.environ.get("INCLUDE_PRERELEASES", "true").lower() != "false"
 ASSET_FILTER = os.environ.get("ASSET_FILTER", "").strip()        # regex; default = all assets
 MAX_GROUP = int(os.environ.get("MAX_GROUP", "10"))               # Telegram album limit
@@ -359,6 +364,69 @@ def sweep():
     return total
 
 
+# --------------------------------------------------------------------------
+# Web-service mode (bind $PORT, serve health, run the loop in a thread)
+# --------------------------------------------------------------------------
+
+_sweep_lock = threading.Lock()
+_stats = {"last_sweep_at": None, "last_sent": None, "sweeps": 0}
+
+
+def run_sweep():
+    """Run one sweep, guarding against overlapping runs."""
+    if not _sweep_lock.acquire(blocking=False):
+        log.info("A sweep is already running - skipping this trigger")
+        return None
+    try:
+        sent = sweep()
+        _stats["last_sweep_at"] = time.time()
+        _stats["last_sent"] = sent
+        _stats["sweeps"] += 1
+        return sent
+    except Exception as exc:                            # noqa: BLE001
+        log.warning("Sweep error: %s", exc)
+        return None
+    finally:
+        _sweep_lock.release()
+
+
+def _loop():
+    while True:
+        run_sweep()
+        time.sleep(POLL_INTERVAL)
+
+
+def run_web():
+    from flask import Flask, request, jsonify  # lazy import
+
+    app = Flask(__name__)
+
+    @app.get("/")
+    def health():
+        return jsonify({
+            "status": "ok",
+            "watching": GITHUB_USER,
+            "interval_seconds": POLL_INTERVAL,
+            "sweeps_done": _stats["sweeps"],
+            "last_sweep_at": _stats["last_sweep_at"],
+            "last_sent": _stats["last_sent"],
+        })
+
+    @app.route("/sweep", methods=["GET", "POST"])
+    def trigger():
+        if SWEEP_KEY:
+            supplied = request.args.get("key") or request.headers.get("X-Sweep-Key", "")
+            if supplied != SWEEP_KEY:
+                return jsonify({"error": "forbidden"}), 403
+        sent = run_sweep()
+        return jsonify({"ok": True, "sent": sent})
+
+    # start the background sweep loop, then serve HTTP
+    threading.Thread(target=_loop, daemon=True).start()
+    log.info("Web service listening on port %d (health: /, trigger: /sweep)", WEB_PORT)
+    app.run(host="0.0.0.0", port=WEB_PORT)
+
+
 def main():
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHANNEL_ID:
         sys.exit("Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHANNEL_ID (see README.md).")
@@ -371,13 +439,13 @@ def main():
     if ONCE:
         sweep()
         return
+    if WEB:
+        run_web()
+        return
 
     log.info("Watching %s every %ds (Ctrl-C to stop)", GITHUB_USER, POLL_INTERVAL)
     while True:
-        try:
-            sweep()
-        except Exception as exc:                        # noqa: BLE001
-            log.warning("Sweep error: %s", exc)
+        run_sweep()
         time.sleep(POLL_INTERVAL)
 
 
