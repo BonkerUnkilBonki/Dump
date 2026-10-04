@@ -1,0 +1,10 @@
+# secrets & local state — never commit these
+.env
+dump_state.json
+*.log
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/

@@ -1,0 +1,35 @@
+# Render Blueprint for the GitHub Releases Dump Bot.
+# https://render.com/docs/blueprint-spec
+#
+# This is a BACKGROUND WORKER (not a web service): it runs the polling loop
+# continuously and needs no public URL. Background workers are a paid service
+# type on Render - the free plan only covers web services, which spin down.
+services:
+  - type: worker
+    name: github-dump-bot
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python dump_bot.py
+    autoDeploy: true
+    # Persistent disk so dump_state.json (the "already sent" memory) survives
+    # restarts and redeploys. Without it, every restart re-dumps everything.
+    disk:
+      name: dump-state
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: GITHUB_USER
+        value: BonkerUnkilBonki
+      - key: TELEGRAM_CHANNEL_ID
+        value: "@BonkiDump"
+      - key: STATE_FILE
+        value: /var/data/dump_state.json
+      - key: ONCE
+        value: "false"
+      # Secrets - Render prompts for these on first deploy; nothing is stored
+      # in the repo.
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false

@@ -62,16 +62,59 @@ or just set the variables inline.
 
 ---
 
-## Hosting the "keep watching" mode
+## Deploy on Render (Background Worker)
 
-Watching is a long-running loop, so it needs a place that stays on:
+A Background Worker is the right service type: it runs the polling loop
+continuously and needs no public URL. `render.yaml` in this folder sets most
+of it up. (Note: background workers are a paid Render service type — the free
+plan only covers web services, which spin down after ~15 min idle.)
 
-- **Your own PC / a Raspberry Pi / a VPS** — simplest. Run `python dump_bot.py`
-  under `systemd`, `screen`/`tmux`, or `pm2`.
-- **Render** — a *Background Worker* (paid) is the clean fit. A free Render web
-  service spins down after ~15 min idle and would stop the loop, so it isn't
-  suitable for continuous watching. (The one-time backfill can still be run
-  from anywhere.)
+**R1. Push these files to a GitHub repo** — `dump_bot.py`, `requirements.txt`,
+`render.yaml`, and `.gitignore` if you have one. Never commit `.env`.
+
+```bash
+git init && git add dump_bot.py requirements.txt render.yaml
+git commit -m "github dump bot"
+git branch -M main
+git remote add origin https://github.com/<you>/<repo>.git
+git push -u origin main
+```
+
+**R2. Create the worker.** Render Dashboard → **New +** → **Blueprint** →
+connect the repo → Render reads `render.yaml` and creates the **Background
+Worker**. It prompts you for the two secrets.
+
+(Manual alternative: **New +** → **Background Worker** → connect the repo →
+Runtime **Python** → Build `pip install -r requirements.txt` → Start
+`python dump_bot.py`. Then add the env vars and the disk by hand.)
+
+**R3. Set the environment variables** (the Blueprint fills most of these; you
+supply the two secrets):
+
+| Key | Value |
+| --- | --- |
+| `TELEGRAM_BOT_TOKEN` | your BotFather token |
+| `GITHUB_TOKEN` | fine-grained PAT, Public Repositories read-only |
+| `TELEGRAM_CHANNEL_ID` | `@BonkiDump` |
+| `GITHUB_USER` | `BonkerUnkilBonki` |
+| `STATE_FILE` | `/var/data/dump_state.json` |
+| `ONCE` | `false` |
+
+**R4. Keep the disk.** `render.yaml` attaches a 1 GB disk mounted at `/var/data`,
+and `STATE_FILE` points into it, so the de-dup memory survives restarts and
+redeploys. Without this, every restart would re-dump everything.
+
+**R5. Deploy and watch the logs.** On first start the worker does the full
+backfill automatically — one album per release, oldest first — then logs
+`Sweep complete - 0 asset(s) sent` on the next pass, which confirms de-dup is
+working. Check `@BonkiDump` to see the files arrive.
+
+---
+
+## Other ways to host the "keep watching" mode
+
+- **Your own PC / a Raspberry Pi / a VPS** — simplest. Run
+  `python dump_bot.py` under `systemd`, `screen`/`tmux`, or `pm2`.
 
 To keep it running after closing your terminal:
 
